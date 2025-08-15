@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Souls-like 高畫質版（Electron）</title>
+<style>
+  html,body{height:100%;margin:0;overflow:hidden;background:#07060a;font-family:Inter,Segoe UI,Roboto,'Noto Sans TC',sans-serif;color:#fff}
+  canvas{display:block}
+  #ui{position:absolute;left:14px;top:14px;z-index:60;user-select:none}
+  .bar{background:linear-gradient(180deg,rgba(255,255,255,0.05),rgba(0,0,0,0.55));padding:8px;border-radius:10px;margin-bottom:10px;min-width:320px;backdrop-filter:blur(6px)}
+  .meter{height:14px;background:rgba(0,0,0,0.45);border-radius:8px;margin-top:6px;overflow:hidden}
+  .meter>i{display:block;height:100%;width:100%;background:linear-gradient(90deg,#e33,#f99)}
+  #log{position:absolute;left:14px;bottom:14px;background:rgba(0,0,0,0.45);padding:10px;border-radius:10px;color:#fff;font-size:13px;z-index:60;min-width:340px}
+  #menu{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);background:linear-gradient(180deg,rgba(255,255,255,0.06),rgba(0,0,0,0.65));padding:22px;border-radius:14px;color:#fff;z-index:80;box-shadow:0 12px 38px rgba(0,0,0,0.7);text-align:center}
+  button{margin-top:10px;padding:10px 14px;border-radius:10px;border:0;background:#2b6;cursor:pointer}
+  #hint{position:absolute;right:14px;top:14px;background:rgba(0,0,0,0.45);padding:10px;border-radius:10px;color:#fff;text-align:right;z-index:60}
+  #cross{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:20px;height:20px;z-index:70;pointer-events:none}
+  #cross:before,#cross:after{content:' ';position:absolute;background:#fff;border-radius:2px}
+  #cross:before{left:0;right:0;top:9px;height:2px}#cross:after{top:0;bottom:0;left:9px;width:2px}
+  #credits{position:absolute;left:50%;bottom:12px;transform:translateX(-50%);color:#aaa;font-size:12px;z-index:60}
+</style>
+</head>
+<body>
+<div id="ui">
+  <div class="bar"><div>HP <span id="hpText" style="float:right">160/160</span><div class="meter"><i id="hpbar" style="width:100%"></i></div></div></div>
+  <div class="bar"><div>Stamina <span id="stText" style="float:right">120/120</span><div class="meter"><i id="stambar" style="width:100%"></i></div></div></div>
+  <div class="bar"><div>Kills <span id="kills" style="float:right">0</span></div></div>
+</div>
+<div id="hint">WASD 移動 • 滑鼠轉向 • 左鍵/右鍵 攻擊 • 空白 滾避 • Shift 跑 • R 重生</div>
+<div id="cross"></div>
+<div id="log">載入中...</div>
+<div id="menu"><h2>Souls-like 高畫質版</h2><div style="opacity:0.9">按「開始遊戲」並點一下畫面啟用滑鼠鎖定。</div><button id="start">開始遊戲</button><button id="help">說明</button></div>
+<div id="credits">Electron • Three.js • 資源可離線（首次需網路取得 Three.js）</div>
+<script src="https://unpkg.com/three@0.158.0/build/three.min.js"></script>
+<script>
+let renderer, scene, camera;
+let clock = new THREE.Clock();
+let player, enemies=[], particles=[];
+let hp=160, maxHp=160, stam=120, maxStam=120, kills=0;
+let attackCD=0, dodgeCD=0, dead=false;
+let pointerLocked=false;
+
+init(); animate();
+
+function init(){
+  renderer = new THREE.WebGLRenderer({antialias:true, powerPreference:'high-performance'});
+  renderer.setPixelRatio(Math.min(2, window.devicePixelRatio));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  document.body.appendChild(renderer.domElement);
+
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x06050a);
+  scene.fog = new THREE.Fog(0x06050a, 30, 120);
+
+  camera = new THREE.PerspectiveCamera(60, window.innerWidth/window.innerHeight, 0.1, 2000);
+  camera.position.set(0,4,10);
+
+  const hemi = new THREE.HemisphereLight(0xbfd1ff, 0x101018, 0.7); scene.add(hemi);
+  const key = new THREE.DirectionalLight(0xffffff, 1.2); key.position.set(14,20,10); key.castShadow=true; key.shadow.mapSize.set(2048,2048); scene.add(key);
+  const rim = new THREE.DirectionalLight(0x88aaff, 0.6); rim.position.set(-16,14,-8); scene.add(rim);
+  const fill = new THREE.PointLight(0xff8855, 0.8, 60, 2.0); fill.position.set(4,3,-6); scene.add(fill);
+
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(200,200,64,64),
+    new THREE.MeshStandardMaterial({color:0x1a1c21, metalness:0.2, roughness:0.85}));
+  ground.rotation.x = -Math.PI/2; ground.receiveShadow = true; scene.add(ground);
+
+  const back = new THREE.Mesh(new THREE.PlaneGeometry(100,30), new THREE.MeshStandardMaterial({color:0x0d0b12, metalness:0.6, roughness:0.22}));
+  back.position.set(0,12,-40); back.receiveShadow=true; scene.add(back);
+
+  player = new THREE.Group();
+  const armor = new THREE.Mesh(new THREE.CapsuleGeometry(0.7,1.2,12,24),
+    new THREE.MeshStandardMaterial({color:0x5ea3ff, metalness:0.35, roughness:0.5}));
+  armor.castShadow=true; armor.position.y=1.2; player.add(armor);
+  const helm = new THREE.Mesh(new THREE.SphereGeometry(0.42,32,24),
+    new THREE.MeshStandardMaterial({color:0xeef3ff, metalness:0.1, roughness:0.35}));
+  helm.position.y=2.2; helm.castShadow=true; player.add(helm);
+  const shoulderL = new THREE.Mesh(new THREE.SphereGeometry(0.32,20,16),
+    new THREE.MeshStandardMaterial({color:0x7fb0ff, metalness:0.25, roughness:0.45}));
+  const shoulderR = shoulderL.clone(); shoulderL.position.set(-0.72,1.6,0); shoulderR.position.set(0.72,1.6,0); player.add(shoulderL,shoulderR);
+  const swordMat = new THREE.MeshStandardMaterial({color:0xdddddd, metalness:1.0, roughness:0.18});
+  const blade = new THREE.Mesh(new THREE.BoxGeometry(0.12,0.06,1.9), swordMat); blade.position.set(1.0,1.1,0.4); blade.rotation.x=-0.25; player.add(blade);
+  player.position.set(0,0,3); scene.add(player);
+
+  for(let i=0;i<5;i++) spawnEnemy(new THREE.Vector3(Math.random()*18-9,0,-10 - Math.random()*10));
+
+  document.getElementById('start').onclick = ()=>{ renderer.domElement.requestPointerLock(); document.getElementById('menu').style.display='none'; log('開始'); };
+  document.getElementById('help').onclick = ()=>{ alert('操作：WASD 移動，左鍵輕攻，右鍵重攻，空白滾避，Shift 跑，R 重生。'); };
+
+  window.addEventListener('keydown', onKeyDown);
+  window.addEventListener('keyup', onKeyUp);
+  window.addEventListener('mousedown', onMouseDown);
+  window.addEventListener('contextmenu', e=>e.preventDefault());
+  window.addEventListener('pointerlockchange', ()=>{ pointerLocked = document.pointerLockElement === renderer.domElement; });
+  window.addEventListener('resize', ()=>{ camera.aspect = window.innerWidth/window.innerHeight; camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth, window.innerHeight); });
+}
+
+let keys={w:0,a:0,s:0,d:0,shift:0};
+function onKeyDown(e){ if(e.key==='w') keys.w=1; if(e.key==='a') keys.a=1; if(e.key==='s') keys.s=1; if(e.key==='d') keys.d=1; if(e.key==='Shift') keys.shift=1; if(e.code==='Space') tryDodge(); if(e.key==='r'||e.key==='R') respawn(); }
+function onKeyUp(e){ if(e.key==='w') keys.w=0; if(e.key==='a') keys.a=0; if(e.key==='s') keys.s=0; if(e.key==='d') keys.d=0; if(e.key==='Shift') keys.shift=0; }
+function onMouseDown(e){ if(!pointerLocked||dead) return; if(e.button===0) attack('light'); if(e.button===2) attack('heavy'); }
+
+function spawnEnemy(pos, isBoss=false){
+  const mat = new THREE.MeshStandardMaterial({color:isBoss?0x8b2f2f:0xff8b8b, metalness:0.2, roughness:isBoss?0.7:0.6});
+  const g = new THREE.Group();
+  const body = new THREE.Mesh(new THREE.CapsuleGeometry(isBoss?1.0:0.7, isBoss?1.4:1.0, 10, 18), mat); body.castShadow=true; body.position.y=1.2; g.add(body);
+  const head = new THREE.Mesh(new THREE.SphereGeometry(isBoss?0.55:0.42, 24, 18), new THREE.MeshStandardMaterial({color:0xffe7e7})); head.position.y=2.2; head.castShadow=true; g.add(head);
+  g.position.copy(pos); g.userData = {hp:isBoss?420:110, maxHp:isBoss?420:110, isBoss:isBoss, cd:0};
+  scene.add(g); enemies.push(g);
+}
+
+function attack(type){
+  if(attackCD>0 || stam < (type==='light'?12:30)) return;
+  stam -= (type==='light'?12:30); attackCD = type==='light'?0.55:1.1;
+  const forward = new THREE.Vector3(0,0,-1).applyQuaternion(player.quaternion);
+  const center = player.position.clone().add(forward.multiplyScalar(2.1)).add(new THREE.Vector3(0,1.1,0));
+  const box = new THREE.Box3().setFromCenterAndSize(center, new THREE.Vector3(3.2,2.4,3.2));
+  for(let i=0;i<enemies.length;i++){
+    const e = enemies[i]; if(e.userData.hp<=0) continue;
+    const eb = new THREE.Box3().setFromObject(e);
+    if(box.intersectsBox(eb)){
+      const dmg = type==='light'?22:48;
+      e.userData.hp = Math.max(0, e.userData.hp - dmg);
+      spawnHit(e.position.clone().add(new THREE.Vector3(0,1.1,0)));
+      log('命中 ' + dmg);
+      if(e.userData.hp<=0) killEnemy(e);
+    }
+  }
+}
+
+function spawnHit(pos){
+  for(let i=0;i<16;i++){
+    const s = new THREE.Mesh(new THREE.SphereGeometry(0.06,8,8), new THREE.MeshStandardMaterial({color:0xffcc88, emissive:0xffbb66, roughness:0.35}));
+    s.position.copy(pos);
+    s.userData = {vel:new THREE.Vector3((Math.random()-0.5)*4.2, Math.random()*3.4, (Math.random()-0.5)*4.2), life:0.7+Math.random()*0.7};
+    particles.push(s); scene.add(s);
+  }
+}
+
+function killEnemy(e){
+  kills++; document.getElementById('kills').innerText = kills;
+  setTimeout(()=>{ scene.remove(e); const idx=enemies.indexOf(e); if(idx>=0) enemies.splice(idx,1); }, 200);
+  hp = Math.min(maxHp, hp + 20);
+  if(kills===6){ spawnEnemy(new THREE.Vector3(0,0,-24), true); log('Boss 出現！'); }
+}
+
+function tryDodge(){
+  if(dodgeCD>0 || stam<18) return;
+  stam -= 18; dodgeCD = 0.9; attackCD = 0.2;
+  const fwd = new THREE.Vector3(0,0,-1).applyQuaternion(player.quaternion);
+  player.position.addScaledVector(fwd, 3.4);
+  log('滾避');
+}
+
+function applyEnemyAI(dt){
+  for(let i=0;i<enemies.length;i++){
+    const en = enemies[i]; if(en.userData.hp<=0) continue;
+    const toP = new THREE.Vector3().subVectors(player.position, en.position); const dist = toP.length();
+    if(dist>2.3){ toP.normalize(); en.position.addScaledVector(toP, dt*(en.userData.isBoss?1.6:2.8)); }
+    else { en.userData.cd = (en.userData.cd||0) - dt; if(en.userData.cd<=0){ en.userData.cd = 1.1 + Math.random()*0.9; if(Math.random()<0.82){ const dmg = en.userData.isBoss?26+Math.floor(Math.random()*14):14+Math.floor(Math.random()*8); if(dodgeCD>0.7){ log('免傷'); } else { hp = Math.max(0, hp-dmg); log('受傷 ' + dmg); if(hp<=0){ dead=true; log('死亡，按 R 重生'); } } } } }
+  }
+}
+
+function respawn(){
+  hp=maxHp; stam=maxStam; dead=false; player.position.set(0,0,3); enemies.forEach(e=>scene.remove(e)); enemies.length=0; for(let i=0;i<5;i++) spawnEnemy(new THREE.Vector3(Math.random()*18-9,0, -10 - Math.random()*10)); kills=0; document.getElementById('kills').innerText='0'; log('重生');
+}
+
+function updateParticles(dt){
+  for(let i=particles.length-1;i>=0;i--){
+    const p = particles[i]; p.userData.life -= dt; p.position.addScaledVector(p.userData.vel, dt); p.userData.vel.y -= 9.8*dt*0.65; if(p.userData.life<=0){ scene.remove(p); particles.splice(i,1); }
+  }
+}
+
+function updatePlayerMovement(dt){
+  if(dead) return;
+  stam = Math.min(maxStam, stam + dt*18);
+  attackCD = Math.max(0, attackCD - dt); dodgeCD = Math.max(0, dodgeCD - dt);
+  const dir = new THREE.Vector3((keys.d-keys.a),0,(keys.s-keys.w));
+  if(dir.lengthSq()>0){
+    dir.normalize();
+    const camDir = new THREE.Vector3(); camera.getWorldDirection(camDir); const camYaw = Math.atan2(camDir.x, camDir.z);
+    dir.applyAxisAngle(new THREE.Vector3(0,1,0), camYaw + Math.PI);
+    const speed = keys.shift?6.8:4.2; player.position.addScaledVector(dir, dt * speed);
+    const look = Math.atan2(dir.x, -dir.z); player.quaternion.slerp(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,1,0), look), 0.18);
+  }
+}
+
+let prev=performance.now()/1000;
+function animate(){
+  const now=performance.now()/1000; const dt=Math.min(0.05, now-prev); prev=now;
+  updatePlayerMovement(dt); applyEnemyAI(dt); updateParticles(dt);
+  camera.position.lerp(player.position.clone().add(new THREE.Vector3(0,3.2,8).applyQuaternion(player.quaternion)), 0.12);
+  camera.lookAt(player.position.x, player.position.y+1.2, player.position.z);
+  document.getElementById('hpbar').style.width = (hp/maxHp*100)+'%'; document.getElementById('stambar').style.width = (stam/maxStam*100)+'%';
+  document.getElementById('hpText').innerText = Math.round(hp) + '/' + maxHp; document.getElementById('stText').innerText = Math.round(stam) + '/' + maxStam;
+  renderer.render(scene, camera);
+  requestAnimationFrame(animate);
+}
+
+function log(t){ document.getElementById('log').innerText = t; }
+
+document.addEventListener('mousemove', e=>{
+  if(!pointerLocked) return;
+  const yaw = -e.movementX * 0.0025;
+  player.rotateY(yaw);
+});
+</script>
+</body>
+</html>

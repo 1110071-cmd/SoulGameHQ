@@ -1,0 +1,17 @@
+# AppVeyor CI config: build Windows exe with electron-builder
+version: 1.0.{build}
+image: Visual Studio 2019
+
+build_script:
+  - ps: Install-Product node LTS
+  - node --version
+  - npm --version
+  - npm install
+  - npm run build-win
+
+artifacts:
+  - path: dist\*.exe
+    name: SoulsGameHQ_Windows_Installer
+
+cache:
+  - node_modules -> package-lock.json
